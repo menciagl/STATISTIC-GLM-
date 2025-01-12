@@ -1,0 +1,1210 @@
+---
+title: "Stats & Data Science II - Assignment"
+author: Mencía Gómez Luna (100431421)
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+```
+
+# Problem description
+
+In our cities, there are some services that are essential for our daily living: pharmacies, schools or transport points of sale. However, these facilities are not necessarily well distributed. We want to analyze in this assignment which areas lacks of these facilities based on regression models. The steps to perform the analysis are:
+
+- EDA: Descriptive analysis of data
+- Feature selection: Are there variables we can discard?
+- Perform a feature engineering process extending important variables
+- Perform regression modelling for the three target variables (three different models).
+- Create a score to measure which areas have enough facilities and which ones don't.
+- Which variables are the most highly related to the score? In particular, what makes a census section to have a low number of facilities?
+- Discuss the results
+
+# Dataset description
+
+```{r}
+df<-fread("census_section_stats.csv", sep=";", dec=",", stringsAsFactors = F)
+head(df, n = 10)
+```
+
+For every census section we have a row in our dataset, here are some of the main columns of the dataset:
+
+* census_section_code: census_section_code identifier
+* n_pharmacies (target variable 1): number of pharmacies in the census section
+* n_schools (target variable 2): number of schools in the census section
+* n_transport_salespoints (target variable 3): number of transport points of sale.
+
+# Descriptive analysis
+
+*(I had problems rendering the Script and apparently it is due to the 2 first chuncks. That's why I put them with hashtag (#) although in R Studio it does work. The rest of the chunks work perfectly)*
+
+First, we generate an introductory visualization of the data set to know the important characteristics with the plot_intro() command. We see that most of the columns (97%) are continuous -which is 63 out of 65 columns-, and only 3% discrete columns -2 out of 65-. There aren't missing columns nor missing observations. 
+
+```{r}
+#library (DataExplorer)
+#DataExplorer::introduce(df)
+#plot_intro(df) 
+```
+
+Now we do the descriptive analysis, focusing on the most important statistics: **mean, med, min and max**. Because we have many variables (columns) we are only interested on focusing on our target variables
+
+```{r}
+#summary (df)
+```
+
+Taking into account the **TARGET VARIABLES** we can see that the mean of **number of pharmacies** (target variable 1) in the census section is 0.6613, while the median is 1. The minimum number of pharmacies is 0 and the maximum is 5.
+
+For the case of **number of schools** in the census section (target variable 2) the mean is 0.9076, bigger than the number of pharmacies, meaning that there are on average more schools than pharmacies. The median is 0 as well as the minimum and the maximum is 12. 
+
+Finally, the mean of the number of transport points of sale (target variable 3) is 0.2707, the lower of the 3 target variables, while the median is 0, like in schools. The minimum again is 0 transport points of sale and the maximum is 4.
+
+All three variables are **count variables and that only take positive integer numbers** because they represent the number of an occurrence/event that occurred in a defined area. This gives us a clue: they could have a linear or Poisson distribution
+
+We can see other descriptive values for other data (like for some nationalities, group ages, etc), but those are not as important. We focus on the target variables ones and **represent them graphically**:
+
+```{r}
+library(ggplot2)
+library(gridExtra) 
+
+p1 <- ggplot(df, aes(x = n_pharmacies)) + 
+  geom_bar(fill = "lightgreen") +  
+  geom_text(aes(label = after_stat(count)),  
+            stat = "count", vjust = -0.2, size = 1.7) +  
+  ggtitle("Number of Pharmacies") 
+
+p2 <- ggplot(df, aes(x = n_schools)) + 
+  geom_bar(fill = "pink") + 
+  geom_text(aes(label = after_stat(count)),  
+            stat = "count", vjust = -0.2, size = 1.7) +
+  ggtitle("Number of Schools")
+
+p3 <- ggplot(df, aes(x = n_transport_salespoints)) + 
+  geom_bar(fill = "skyblue") + 
+  geom_text(aes(label = after_stat(count)),  
+            stat = "count", vjust = -0.2, size = 1.7) +
+  ggtitle("Number of Transport Salespoints")
+
+grid.arrange(p1, p2, p3, nrow = 2, ncol = 2)
+```
+
+Examining the graphs, we confirm, as mentioned earlier, that these variables are counts and take only positive values. Also, the three target variables are positively/right skewed, meaning that most of the values are concentrated in the left part of the distribution, near the smallest values, with lots of 0s. This creates a buildup on that side. In addition, there's a long tail of the distribution on the right (specially for the number of schools), due to the presence of extreme values. What we conclude for the three variables is that **most of the values are around 0 or 1** (number of pharmacies, schools or transport sale points), while **there are fewer observations where there are more than 1 pharmacy, school or transport sale point**
+
+All this information gives us a clue that a **Poisson model** could be the best one fit the distribution and, more specifically, a ZIP (Zero Inflated Poisson) model one because the excess number of zeros. Thanks to the density plots we see how the Poisson distribution could fit the data:
+
+*Pharmacies*
+```{r}
+success <- min(df$n_pharmacies):max(df$n_pharmacies)
+density <- plot(density(df$n_pharmacies),ylim=c(0,0.6), xlim = c(0,6))+
+lines(success,dpois(success, lambda=mean(df$n_pharmacies)),col="red")
+```
+
+```{r}
+success <- min(df$n_schools):max(df$n_schools)
+density <- plot(density(df$n_schools),ylim=c(0,0.5), xlim = c(0,5))+
+lines(success,dpois(success, lambda=mean(df$n_schools)),col="red")
+```
+
+
+*Transport points of sales*
+```{r}
+success <- min(df$n_transport_salespoints):max(df$n_transport_salespoints)
+density <- plot(density(df$n_transport_salespoints),ylim=c(0,0.8), xlim = c(0,5))+
+lines(success,dpois(success, lambda=mean(df$n_transport_salespoints)),col="red")
+```
+
+We can also see the bar plot with Poisson distribution:
+
+```{r}
+library(dplyr)
+df_counts <- df |>
+  count(n_pharmacies)
+df_counts2 <- df |>
+  count(n_schools)
+df_counts3<- df |>
+  count(n_transport_salespoints)
+
+g1 <- ggplot(df_counts, aes(x = n_pharmacies, y = n)) + 
+  geom_bar(stat = "identity", fill = "lightgreen") + 
+  geom_line(aes(group = 1), color = "red", linewidth = 1) + 
+  ggtitle("Number of Pharmacies")
+
+g2 <- ggplot(df_counts2, aes(x = n_schools, y = n)) + 
+  geom_bar(stat = "identity", fill = "pink") + 
+  geom_line(aes(group = 1), color = "red", linewidth = 1) + 
+  ggtitle("Number of Schools")
+
+g3 <- ggplot(df_counts3, aes(x = n_transport_salespoints, y = n)) + 
+  geom_bar(stat = "identity", fill = "skyblue") + 
+  geom_line(aes(group = 1), color = "red", linewidth = 1) + 
+  ggtitle("Number of Transport Points of Sale")
+
+grid.arrange(g1, g2, g3, nrow = 2, ncol = 2)
+
+```
+
+As we see the observations follow a Poisson distribution for the three target variables where there are a high amount of 0s.
+
+
+
+**CORRELATION**
+For the EDA part we also want to see how the variables are related with each other, so we are going to focus on the correlations. We can do a correlation matrix to understand how are the relationships between the explanatory variables, between the target and explanatory variables and between the target variables. What we get is a very big Matrix. 
+
+We did it with the corrplot function to adjust the size of the letters so it could be more legible than with the DataExplorer plot. We also select the numeric variables to work with, because 63/65 are numeric and the rest are categorical and aren't so important
+
+```{r}
+# CORRELATION
+library (corrplot)
+df_numeric <- df[, .SD, .SDcols = sapply(df, is.numeric)] # only numeric values: 63 / 65 variables
+corMatrix <- round(cor(df_numeric),2)
+
+corrplot(corMatrix, method = "color", tl.col = "black", tl.cex = 0.4)
+```
+
+If we want to see just those variables that are highly correlated, we just check those interactions that are more bluish and reddisch (ignoring the own correlation). Here we can see correlations between all variables, although the ones that really matter to us are between the target and the explanatory variables.
+
+*Correlation between target variables*:
+
+When we test the correlation between the three target variables we get that in general it's low and positive:
+
+```{r}
+cor(df_numeric[, c("n_pharmacies", "n_schools", "n_transport_salespoints")])
+```
+
+*Correlation between target and explanatory variables*:
+
+We can see the correlations between the explanatory and the target variables more detailed than in the matrix with a large table. In addition, this is a important process to select the most relevant variables for the feature selection for each model (one model per target variable), which we will see in the next section
+
+```{r}
+cor_pharmacies <- cor(df_numeric, df_numeric$n_pharmacies, use = "complete.obs")
+cor_schools <- cor(df_numeric, df_numeric$n_schools, use = "complete.obs")
+cor_transport <- cor(df_numeric, df_numeric$n_transport_salespoints, use = "complete.obs")
+
+correlation_df <- data.frame(
+  Variable = rownames(cor_pharmacies), 
+  Correlation_Pharmacy = cor_pharmacies,
+  Correlation_School = cor_schools,
+  Correlation_Transport = cor_transport
+)
+
+```
+
+Now we are going to select the most important variables:
+
+
+## Feature selection
+
+From this last table, we want to keep only those variables that are more correlated with the target variables since these should be also the more relevant for the models that will explain the number of pharmacies, schools and transport points of sale. Since we have 3 target variables, at the end we will have 3 models, so we have to select the most correlated variables **for each model**. In addition, we are doing to select approximately **6 variables per model**, because we need the most relevant. *Justification:* 6 is a reasonable number of variables to capture key patterns, but not so many that they overfit or make difficult the interpretation.
+
+We also thought about doing this "feature selection" process through **regularization methods**, especially with Lasso, however we are faced with two obstacles: we don't know for sure what type of model it's because we haven't compared them yet (zip, standard poisson, linear), so we don't know to which model the regularization should be applied; and second, even assuming that it could be ZIP, performing Lasso in this type of models is even more complicated and is not something that we have delved into in Statistics II as we saw in the Script about Regulirized GLMs. That's why we decided to use the correlations tests -and significance- as the best method for feature selection.
+
+So now we are selecting the most correlated variables for each target variable (attention: we don't select the target variables as explanatory):
+
+**PHARMACIES**: 
+```{r}
+correlation_df_pharmacy <- correlation_df[order(abs(correlation_df$Correlation_Pharmacy), decreasing = TRUE), ]
+correlation_df_pharmacy
+```
+
+> For PHARMACIES we have "italian", "city_population", "income_per_capita", "population", "venezuelan", "portuguese".
+
+Now we check the significance between variables and we can see that all the relations are significant and with a correlations between 0,1 and 0,2
+
+```{r}
+cor.test(df_numeric$n_pharmacies, df_numeric$italian) # P-value <0,05 and cor: 0,1477
+cor.test(df_numeric$n_pharmacies, df_numeric$city_population) # P-value <0,05 and cor: 0,1267
+cor.test(df_numeric$n_pharmacies, df_numeric$income_per_capita) # P-value <0,05 and cor: 0,1182
+cor.test(df_numeric$n_pharmacies, df_numeric$population) # P-value <0,05 and cor: 0,1159
+cor.test(df_numeric$n_pharmacies, df_numeric$venezuelan) # P-value <0,05 and cor: 0,1084
+cor.test(df_numeric$n_pharmacies, df_numeric$portuguese) # P-value <0,05 and cor: 0,1025
+```
+
+**SCHOOLS**
+```{r}
+correlation_df_school <- correlation_df[order(abs(correlation_df$Correlation_School), decreasing = TRUE), ]
+correlation_df_school
+```
+
+> For SCHOOLS we have "population_density", population", "pcg_age_0_24", "ratio_expense_home", "avg_age", "american".
+
+
+We check  that all the relations are significant and see that they have a stronger correlations as for pharmacies.
+
+```{r}
+cor.test(df_numeric$n_schools, df_numeric$population_density) # P-value <0,05 and cor: - 0,4425
+cor.test(df_numeric$n_schools, df_numeric$population) # P-value <0,05 and cor: 0,3195
+cor.test(df_numeric$n_schools, df_numeric$pcg_age_0_24) # P-value <0,05 and cor: 0,2522
+cor.test(df_numeric$n_schools, df_numeric$ratio_expense_home) # P-value <0,05 and cor: -0,2259
+cor.test(df_numeric$n_schools, df_numeric$avg_age) # P-value <0,05 and cor: -0,2039
+cor.test(df_numeric$n_schools, df_numeric$american) # P-value <0,05 and cor: - 0,1878
+```
+
+**TRANSPORT SALEPOINTS**
+```{r}
+correlation_df_transport <- correlation_df[order(abs(correlation_df$Correlation_Transport), decreasing = TRUE), ]
+correlation_df_transport
+```
+
+> For TRANSPORT we have "spanish", "italian", british",  "pcg_age_0_24", "american" and "area". (We ignored "pcg_foreigners" and "foreigners" because they are just the opposite to "spanish", so it doesn't give us additional information and also "foreigners" would be highly correlated with the other nationalities (british, american, italian, etc) and we also want to avoid future multicollineality problems. We also ignored "european" for the same reason)
+
+All the relations are significant and with correlations of +/- 0,1-0,2:
+
+```{r}
+cor.test(df_numeric$n_transport_salespoints, df_numeric$spanish) # P-value <0,05 and cor: - 0,1573
+cor.test(df_numeric$n_transport_salespoints, df_numeric$italian) # P-value <0,05 and cor: 0.13166
+cor.test(df_numeric$n_transport_salespoints, df_numeric$british) # P-value <0,05 and cor: 0.115
+cor.test(df_numeric$n_transport_salespoints, df_numeric$pcg_age_0_24) # P-value <0,05 and cor: - 0,1137
+cor.test(df_numeric$n_transport_salespoints, df_numeric$american) # P-value <0,05 and cor: 0,1105
+cor.test(df_numeric$n_transport_salespoints, df_numeric$area) # P-value <0,05 and cor: 0,1052
+```
+
+Now that we have all significant and more correlated variables for each target variable, we can expand these variables:
+
+## Feature engineering
+
+We expand the meaningful variables for the pharmacies variable, squaring, cubing and making interactions between them. And later in the model we will select those that best fit our models.
+
+```{r}
+library (dplyr)
+df_pharmacies <- df_numeric |>
+  mutate(
+    italian2 = italian^2,
+    italian3 = italian^3,
+    city_population2 = city_population^2,
+    city_population2 = city_population^3,
+    income_per_capita2 = income_per_capita^2,
+    income_per_capita3 = income_per_capita^3,
+    population2 = population^2,
+    population3 = population^3,
+    venezuelan2 = venezuelan^2,
+    venezuelan3 = venezuelan^3,
+    portuguese2 = portuguese^2,
+    portuguese3 = portuguese^3,
+    it_city = italian*city_population,
+    it_incom = italian*income_per_capita,
+    it_pop = italian*population,
+    it_ven = italian*venezuelan,
+    it_por = italian*portuguese,
+    city_incom = city_population*income_per_capita,
+    city_ven = city_population*venezuelan,
+    city_por = city_population*portuguese,
+    incom_pop = income_per_capita*population,
+    incom_ven = income_per_capita*venezuelan,
+    incom_por= income_per_capita*portuguese,
+    pop_ven = population*venezuelan,
+    pop_por = population*portuguese
+  )
+```
+
+We expand the meaningful variables for the schools variable in the same way
+
+```{r}
+df_schools <- df_numeric |>
+  mutate(
+    population_density2 = population_density^2,
+    population_density3 = population_density^3,
+    population2 = population^2,
+    population3 = population^3,
+    pcg_age_0_242 = pcg_age_0_24^2,
+    pcg_age_0_243 = pcg_age_0_24^3,
+    ratio_expense_home2 = ratio_expense_home^2,
+    ratio_expense_home3 = ratio_expense_home^3,
+    avg_age2 = avg_age^2,
+    avg_age3 = avg_age^3,
+    american2 = american^2,
+    american3 = american^3,
+    popden_pop = population_density*population,
+    popden_24 = population_density*pcg_age_0_24,
+    popden_ratio = population_density*ratio_expense_home,
+    popden_age = population_density*avg_age,
+    popden_ame = population_density*american,
+    pop_24 = population*pcg_age_0_24,
+    pop_ratio = population*ratio_expense_home,
+    pop_age = population*avg_age,
+    pop_ame = population*american,
+    pcg24_ratio = pcg_age_0_24*ratio_expense_home,
+    pcg24_age = pcg_age_0_24*avg_age,
+    pcg24_ame = pcg_age_0_24*american,
+    ratio_age = ratio_expense_home*avg_age,
+    ratio_ame = ratio_expense_home*american,
+    age_ame = avg_age*american
+  )
+```
+
+
+We expand the meaningful variables for the transport sales point variable
+
+```{r}
+df_transport <- df_numeric |>
+  mutate(
+    spanish = spanish^2,
+    spanish3 = spanish^3,
+    italian2 = italian^2,
+    italian3 = italian^3,
+    british2 = british^2,
+    british3 = british^3,
+    pcg_age_0_242 = pcg_age_0_24^2,
+    pcg_age_0_243 = pcg_age_0_24^3,
+    american2 = american^2,
+    american3 = american^3,
+    area2 = area^2,
+    area3 = area^3,
+    span_it = spanish*italian,
+    span_brit = spanish*british,
+    span_24 = spanish*pcg_age_0_24,
+    span_am = spanish*american,
+    span_area = spanish*area,
+    it_brit = italian*british,
+    it_24 = italian*pcg_age_0_24,
+    it_am = italian*american,
+    it_area = italian*area,
+    brit_24 = british*pcg_age_0_24,
+    brit_am= british*american,
+    brit_area= british*area,
+    age24_ame = pcg_age_0_24*american,
+    age24_area = pcg_age_0_24*area,
+    am_area = american*area
+  )
+```
+
+
+# Regression models
+
+Before performing regression models, we are going to **COMPARE models: ZIP, standard Poisson and linear.** Why?
+
+In the EDA (Exploratory Data Analysis) phase, we observed that the target variables appear to follow a standard Poisson distribution. However, it makes more sense to consider that these variables might follow a ZIP (Zero-Inflated Poisson) distribution due to the presence of a large number of zeros, which is a key characteristic of this distribution. That's why we want to compare this models to ensure which one is the best. Additionally, we include the linear model to assess how Poisson-type models perform in comparison. We will also test for overdispersion, in case we need to consider other models such as the Negative Binomial Regression or Quasi-Poisson Model. By comparing these models, we can identify the one that provides the best fit, using metrics like AIC, MAE or LogLikeliness.
+
+At first, I intended to use Cross Validation (with the *caret* package) to evaluate the performance of the models more reliably while comparing them. However, it does not support certain models, such as ZIP (Zero-Inflated Poisson) or Negative Binomial Regression. The same for the *cv.glmnet* applied to the ZIP. As a result, I decided not to apply CV universally while comparing models. This omission is not critical since the primary goal is to evaluate overall model fit and ranking using metrics like AIC and MAE, which can be calculated without CV. However, I did apply CV in a specific case, when comparing the Quasi Poisson model due to overdispersion, to ensure robustness where applicable.
+
+*Important*: When comparing models we aren't going to scale the variables yet since the comparison of models using metrics such as  AIC doesn't depend on whether the variables are scaled, because these metrics evaluate the global fit of the model, not the magnitude of the coefficients. We will scale the variables when we have already chosen which is the best model, and we will proceed to make the chosen model again with the variables already scaled in order to be able to interpret them. **But for now we just compare models**
+
+## Comparing models
+
+We start checking the best model for **NUMBER OF PHARMACIES**. We include those variables created by the interaction of other variables to add valuable information to the model
+
+The first thing we look at is the relationship between variance and mean:
+
+```{r}
+library(MASS)
+library(AER) 
+mean<- mean(df_pharmacies$n_pharmacies)
+var <- var(df_pharmacies$n_pharmacies)
+var/mean 
+```
+
+Var/mean = 0,76, a value next to 1, so it's close to the condition of Poisson Models where mean = variance, although it suggests that the variance is less than the mean, which could indicate underdispersion in the data.
+
+Now we create the models that we are going to compare
+
+```{r}
+# Linear
+lm_model <- lm(n_pharmacies ~ italian + city_population + population + income_per_capita + venezuelan + portuguese + it_city +  it_incom + it_pop + it_ven + it_por + city_incom + city_ven + city_por + incom_pop + incom_ven + incom_por + pop_ven +pop_por, data = df_pharmacies)
+
+# Poisson
+poisson_model <- glm(n_pharmacies ~ italian + city_population + population + income_per_capita + venezuelan + portuguese + it_city +  it_incom + it_pop + it_ven + it_por + city_incom + city_ven + city_por + incom_pop + incom_ven + incom_por + pop_ven +pop_por, family = poisson, data = df_pharmacies)
+
+#ZIP
+library(pscl)
+zip <- zeroinfl(n_pharmacies ~ italian + city_population + population + income_per_capita + venezuelan + portuguese + it_city +  it_incom + it_pop + it_ven + it_por + city_incom + city_ven + city_por + incom_pop + incom_ven + incom_por + pop_ven +pop_por, data = df_pharmacies, dist="poisson")
+```
+
+And we check overdispersion: 
+
+```{r}
+library (AER)
+dispersiontest(poisson_model)
+```
+
+H0: There is no overdispersion
+
+As we expected after comparing the mean with the variance, there's no overdispersion in the data since the p-value is high (>0,05), meaning that we can not reject the Null Hypothesis. So the Negative Binomial Regression nor the Quasi Poisson wouldn't be good models
+
+Now we compare the potencial possible models using Achaiche information criteria (AIC), which measures the balance between the quality of the model fit and the simplicity of the model.
+
+```{r}
+aic_results <- AIC(lm_model, poisson_model, zip)
+list(AIC = aic_results)
+```
+Since we have a lower AIC in the standard Poisson regression, followed by the ZIP model, these a better model than linear for this data because they are better fitting the data, minimizing the Achaiche Information Criterion.
+
+Now we want to compare Poisson with ZIP to determine which model fits the data better based on their predictions, specifically using the MAE (Mean Absolute Error) as the evaluation metric. 
+
+```{r}
+# Calculate MAE with the predictions
+lm_predictions <- predict(lm_model, type = "response")
+poisson_predictions <- predict(poisson_model, type = "response")
+preds_zip<-predict(zip, type = "response")
+
+lm_MAE <- mean(abs(df$n_pharmacies - lm_predictions))
+poisson_MAE <- mean(abs(df$n_pharmacies - poisson_predictions))
+zip_mae <- mean(abs(df$n_pharmacies - preds_zip))
+
+list(
+  LinearModel = list(MAE = lm_MAE),
+  PoissonModel = list(MAE = poisson_MAE),
+  ZIP = list(MAE = zip_mae)
+)
+```
+
+We have very similar MAE in the three models. Since we are not sure about which model to choose (standard Poisson or ZIP), we look at the loglikeliness of both models, indicating which model fits better the data:
+
+```{r}
+loglik_poisson_val <- logLik(poisson_model)
+loglik_zip_val <- logLik(zip)
+
+data.frame(
+  Model = c("Poisson", "ZIP"),
+  LogLikelihood = c(as.numeric(loglik_poisson_val), as.numeric(loglik_zip_val))
+)
+```
+Zip has a slightly better value for LogLikelihood
+
+Based on all the results, we choose **the ZIP model for the "number of pharmacies" target variable**. Although the Poisson model has a better value for the AIC, ZIP has a lower MAE and LokLikelihood, and also the distribution (as we saw it graphically) it's more similar to a ZIP model due to the excess of zeros. If we use a Poisson model, the zeros could be underestimated
+
+Now we do the same for **NUMBER OF SCHOOLS**
+
+```{r}
+mean<- mean(df_schools$n_schools)
+var <- var(df_schools$n_schools)
+var/mean 
+```
+That number (1,98) indicates that the data show a greater dispersion than expected in a Poisson distribution. This suggests overdispersion in the data, but it's not very big. 
+
+Here we create the models to compare them as done before: 
+
+```{r}
+#Linear
+lm_model <- lm(n_schools ~ population_density + population + pcg_age_0_24 + ratio_expense_home + avg_age + american + popden_pop + popden_24 + popden_ratio + popden_age + popden_ame+ pop_24 +  pop_ratio + pop_ratio + pop_age + pop_ame + pcg24_ratio + pcg24_age + pcg24_ame +  ratio_age + ratio_ame + age_ame, data = df_schools)
+
+#Poisson
+poisson_model <- glm(n_schools ~ population_density + population + pcg_age_0_24 + ratio_expense_home + avg_age + american + popden_pop + popden_24 + popden_ratio + popden_age + popden_ame+ pop_24 +  pop_ratio + pop_ratio + pop_age + pop_ame + pcg24_ratio + pcg24_age + pcg24_ame +  ratio_age + ratio_ame + age_ame, family = poisson, data = df_schools)
+
+#ZIP
+zip <- zeroinfl(n_schools ~ population_density + population + pcg_age_0_24 + ratio_expense_home + avg_age + american + popden_pop + popden_24 + popden_ratio + popden_age + popden_ame+ pop_24 +  pop_ratio + pop_ratio + pop_age + pop_ame + pcg24_ratio + pcg24_age + pcg24_ame +  ratio_age + ratio_ame + age_ame, data = df_schools, dist="poisson")
+
+dispersiontest(poisson_model)
+```
+H0: There is no overdispersion
+
+As expected, there's significant statistical evidence to reject the null hypothesis, so **there's over-dispersion** in the data, which means that the variability of the observations is greater than what the Poisson model predicts. That's why should also take into account the Negative Binomial Regression and the Quasi Poisson Regression
+
+First we do the Negbin Regression, although we already anticipate that this model might not work/fit the data since it's made for models with overdispersion of >15. In any case, the Quasi Poisson would be more suitable since it is prepared for overdispersion between 2 and 15 approx.
+
+```{r}
+library(MASS)
+negbin<- glm.nb(n_schools ~ population_density + population + pcg_age_0_24 + ratio_expense_home + avg_age + american + popden_pop + popden_24 + popden_ratio + popden_age + popden_ame+ pop_24 +pop_ratio + pop_ratio + pop_age + pop_ame + pcg24_ratio + pcg24_age + pcg24_ame +  ratio_age + ratio_ame + age_ame, data = df_schools)
+
+aic_results <- AIC(lm_model, poisson_model,zip, negbin)
+list(AIC = aic_results)
+```
+
+The negbin has the lowest AIC which indicated that it could be a good model to fit the data. However we still evaluate the MAE:
+
+```{r}
+# Now we calculate MAE with the predictions
+lm_predictions <- predict(lm_model, type = "response")
+poisson_predictions <- predict(poisson_model, type = "response")
+preds_zip<-predict(zip, type = "response")
+preds_nb<-predict(negbin, type = "response")
+
+lm_MAE <- mean(abs(df$n_pharmacies - lm_predictions))
+poisson_MAE <- mean(abs(df$n_pharmacies - poisson_predictions))
+zip_mae <- mean(abs(df$n_pharmacies - preds_zip))
+nb_MAE <- mean(abs(esoph$ncases - preds_nb))
+
+list(
+  LinearModel = list(MAE = lm_MAE),
+  PoissonModel = list(MAE = poisson_MAE),
+  ZIP = list(MAE = zip_mae),
+  NegBin = list(MAE = nb_MAE)
+)
+
+```
+
+However, we see that the Negative Binomial Regression has a very high MAE; therefore, although it's a good model to fit data (because of the lower AIC), it's not good at making predictions. That's why **the best model here (that with a lower MAE and lower AIC) is, ZIP**.
+
+However, since there's overdispersion, we are going to check if the Quasi Poisson model could fit the data better than the ZIP. Here we use caret and cross validation
+
+```{r}
+library(caret)
+set.seed(123)
+train_control <- trainControl(method = "cv", number = 10)
+
+qpois_fit <- train(n_schools ~ population_density + population + pcg_age_0_24 + ratio_expense_home + avg_age + american + popden_pop + popden_24 + popden_ratio + popden_age + popden_ame+ pop_24 +pop_ratio + pop_ratio + pop_age + pop_ame + pcg24_ratio + pcg24_age + pcg24_ame +  ratio_age + ratio_ame + age_ame, data = df_schools,
+                   method = "glm", family="quasipoisson",
+                   trControl = train_control)
+
+qpois_fit
+```
+
+We see that it has higher MAE than the ZIP model. We compare the other metrics (RMSE and R Squared) with the ZIP model:
+
+```{r}
+actuals <- df_schools$n_schools
+# RMSE
+rmse_zip <- sqrt(mean((actuals - preds_zip)^2))
+# R-Squared
+sst <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+sse <- sum((actuals - preds_zip)^2)    # Residual Sum of Squares
+rsquared_zip <- 1 - (sse / sst)
+# Results for ZIP
+list(
+  RMSE = rmse_zip,
+  R_Squared = rsquared_zip
+)
+
+```
+
+The RMSE it's nearly the same for the Quasi Poisson as for the ZIP. The R Squared is greater for the ZIP regression, indicating it better explains the variability in the target variable, specifically 27% of the variability of schools is explained by the model
+
+So **we choose the ZIP model** without doubt for the "number of schools" target variable, because its values are better than those of the other models.
+
+Finally we compare the models for **NUMBER OF TRANSPORT SALE POINTS**
+
+```{r}
+mean<- mean(df_transport$n_transport_salespoints)
+var <- var(df_transport$n_transport_salespoints)
+var/mean 
+```
+
+Taking into account the relationship between the mean and the variance, the Poisson distribution is a really good approximation because the var/mean ratio is close to 1 (0.98)
+
+Creating and comparing models:
+
+```{r}
+#Linear
+lm_model <- lm(n_transport_salespoints ~ spanish + italian + british + pcg_age_0_24 + american + area + span_it +  span_brit + span_24 + span_am + span_area + it_brit + it_24 + it_am + it_area + brit_24 + brit_am + age24_ame + age24_area + am_area, data = df_transport)
+
+#Poisson
+poisson_model <- glm(n_transport_salespoints ~ spanish + italian + british + pcg_age_0_24 + american + area + span_it +  span_brit + span_24 + span_am + span_area + it_brit + it_24 + it_am + it_area + brit_24 + brit_am + age24_ame + age24_area + am_area, family = poisson, data = df_transport)
+
+#ZIP
+zip <- zeroinfl(n_transport_salespoints ~ spanish + italian + british + pcg_age_0_24 + american + area + span_it +  span_brit + span_24 + span_am + span_area + it_brit + it_24 + it_am + it_area + brit_24 + brit_am + age24_ame + age24_area + am_area, data = df_transport, dist ="poisson")
+
+dispersiontest(poisson_model)
+```
+
+There's no overdispersion (p-value > 0,05). Therefore, the Negative Binomial Regression nor the Quasi Poisson wouldn't be good models.
+
+We compare the potential models (linear, standard Poisson and ZIP) using Achaiche information criteria (AIC)
+
+```{r}
+aic_results <- AIC(lm_model, poisson_model,zip)
+list(AIC = aic_results)
+```
+Since we have a lower AIC in the standard Poisson regression, followed by the ZIP model, this might be the best models to fit the data. Now we take into account the MAE in the predictions:
+
+```{r}
+# Calculate MAE with the predictions
+lm_predictions <- predict(lm_model, type = "response")
+poisson_predictions <- predict(poisson_model, type = "response")
+preds_zip<-predict(zip, type = "response")
+
+lm_MAE <- mean(abs(df$n_pharmacies - lm_predictions))
+poisson_MAE <- mean(abs(df$n_pharmacies - poisson_predictions))
+zip_mae <- mean(abs(df$n_pharmacies - preds_zip))
+
+list(
+  LinearModel = list(MAE = lm_MAE),
+  PoissonModel = list(MAE = poisson_MAE),
+  ZIP = list(MAE = zip_mae)
+)
+```
+
+The MAE are very similar for the three models, so just attending to the AIC, the **ZIP is the best model for the "number of transport points of sale"** target variable.
+
+We are using **ZIP for the three models**, but taking into account that we have overdisperssion for the "number of schools" model.
+
+## Models
+
+Now that we know that we can apply the ZIP regression to the three models, we can perform the models. The steps are:
+
+1. First we **scale the variables**. Scaling the variables in our model avoids imbalances due to scale differences, which facilitates convergence and improves the precision of the model. It also helps to interpret the coefficients more consistently, improving the fit. It's useful even when we are not doing regularization like Lasso. In addition, when I didn't scale the variables I had a lot of problems of NaN. I allude to the fact that by not scaling the variables, large differences appear in the scales of the variables, generating overflows and then the logarithm was not calculated well.
+
+2. We **test multicollinearity** because strong correlations between explanatory variables can distort the coefficients and weaken the model's interpretation. So we should avoid including highly correlated explanatory variables. It must be taken into account that when introducing variables that we create from other interactions, the levels of multicollinearity will be high in any case, so we will not pay much attention to this
+(Also, we perform the multicollinearity test at this point, rather than before, because earlier we were unsure which model to test (ZIP, Poisson, linear, and so on)
+
+3. Then, we **split the data into train and test** to perform the model on the train data. It allows us to train the model and evaluate its performance on unseen data, ensuring generalization.
+
+4. We **perform the model**. **CLARIFICATION**: *In the rendering might be some slightly changes in the significances and coefficients. It shouldn't affect the interpretation, but I warned because sometimes it removes significance from variables that already had little significance (0.1).*
+
+> **FIRST MODEL: PHARMACIES**
+
+We scale variables except the dependent variable (n_pharmacies) and the census_section_code which we are going to use in the score generation
+
+```{r}
+# Scale variables
+n_pharmacies <- df_pharmacies$n_pharmacies
+census_section_code <- df_pharmacies$census_section_code
+census_section_code <- as.character(df_pharmacies$census_section_code)
+exp_vars <- df_pharmacies |> dplyr::select(-n_pharmacies, -census_section_code)
+exp_vars_scaled <- as.data.frame(scale(exp_vars))
+
+# New dataframe
+df_pharmacies <- cbind(n_pharmacies, census_section_code, exp_vars_scaled)
+
+```
+
+Now we test multicollinearity :
+
+```{r}
+# Multicolinearity
+zip_ph <- zeroinfl(n_pharmacies ~ italian + city_population + population + income_per_capita + venezuelan + portuguese + it_city +  it_incom + it_pop + it_ven + it_por + city_incom + city_ven + city_por + incom_pop + incom_ven + incom_por + pop_ven + pop_por, data = df_pharmacies, dist="poisson")
+
+library(mctest)
+imcdiag(zip_ph)
+```
+
+A high VIF (Variation Inflation Factor) (>5) -score that measures how much the variance of a coefficient is inflated due to multicollinearity-  indicates that there is multicollinearity. However, the variables that are introducing collinearity are those that we have created by the interaction of the original variables. If we eliminated them, there wouldn't me multicollinearity. But since the variables that we've created are important and gives us additional information, we are going to eliminate ONLY some so that we can perform the model without problems and with significant variables. Even if there is multicollinearity, it is not a big problem.
+
+To do select the variables, I have tested the model several times, taking into account that:
+
+-There are significant variables at a significance level 0.001 (***) 0.01 (**) 0.05 (*) and even 0.1 '.'
+
+-There are **significant variables in both the Poisson and logit components, not only in one**. The ZIP model is formed by two regressions. Each regression explains different aspects of the phenomenon. The Poisson component models the event count, while the logit identifies zero overinflation. If only Poisson has many significant variables and logit does not, the structure of zeros is underestimated, leading to a poorly specified model and imprecise results. Therefore, both must include relevant variables to adequately capture the complexity of the data.
+
+We make the final model taking into account this and splitting the data to work on the train data:
+
+```{r}
+# FINAL MODEL: NUMBER OF PHARMACIES
+library(caret)
+training.samples <- df_pharmacies$n_pharmacies |>
+  createDataPartition(p = 0.8, list = FALSE) 
+
+train.data1  <- df_pharmacies[training.samples, ]
+test.data1 <- df_pharmacies[-training.samples, ]
+
+# Zip
+library(pscl)
+zip_train_1 <- zeroinfl(n_pharmacies ~ italian  + city_population + population + income_per_capita + venezuelan + incom_pop + pop_ven + incom_por, data = train.data1, dist="poisson")
+
+summary (zip_train_1) # To see which variables are significant in the model
+
+```
+
+We can see that there are 2 models that I explained:
+
+The first is the count model that explains the number of occurrences (pharmacies). We look here to understand what variables explain the total number of pharmacies, and we realise that we have some significant variables. The second one is the logit Zero Inflation Model: This models the probability of having excess zeros. It explains why some sections have a disproportionate zero value. In this case the same variables that appeared in the first regression appear significant at 90% level of confidence in the Zero Inflated; *however when rendering, sometimes they don't appear significant, so we won't take them into account much (also because of the low confidence level in the significant variables)*
+
+
+> **SECOND MODEL: SCHOOLS**
+
+We scale variables, create the model with all the important ones and see the multicollinearity:
+
+```{r}
+# We scale variables
+n_schools <- df_schools$n_schools
+census_section_code <- df_schools$census_section_code
+census_section_code <- as.character(df_schools$census_section_code)
+exp_vars <- df_schools |> dplyr::select(-n_schools, -census_section_code)
+exp_vars_scaled <- as.data.frame(scale(exp_vars))
+
+# New dataframe
+df_schools <- cbind(n_schools, census_section_code, exp_vars_scaled)
+```
+
+We test multicollinearity:
+
+```{r}
+# Multicollinearity
+zip_sc <- zeroinfl(n_schools ~ population_density + population + pcg_age_0_24 + ratio_expense_home + avg_age + american + popden_pop + popden_24 + popden_ratio + popden_age + popden_ame+ pop_24 +pop_ratio + pop_age + pop_ame + pcg24_ratio + pcg24_age + pcg24_ame +  ratio_age + ratio_ame + age_ame, data = df_schools, dist="poisson")
+
+imcdiag(zip_sc)
+```
+
+Again as before, even though multicollinearity is introduced, this is not so relevant since the included variables that we created are important to us to obtain valuable information. We eliminate only variables until the model can be performed without any problems (and giving us significant values for both the Poisson regression and the logit regression). In this case, since we have 2 variables related to age (avg_age and pcg_age_0_24 ) we eliminate pcg_age_0_24 -which is more specific than average age- and some interactions with this variable until we find the model with more significant variables
+
+We make the final model splitting the data to work on the train data:
+
+```{r}
+# FINAL MODEL: NUMBER OF SCHOOLS
+training.samples <- df_schools$n_schools |>
+  createDataPartition(p = 0.8, list = FALSE) 
+
+train.data2  <- df_schools[training.samples, ]
+test.data2 <- df_schools[-training.samples, ]
+
+zip_train_2 <- zeroinfl(n_schools ~ population + population_density  + avg_age  + american + popden_pop + pop_24 + pop_ratio + popden_ame + popden_ratio, data = train.data2, dist="poisson")
+
+summary(zip_train_2) # Which variables are significant
+
+```
+
+We have significant variables for the Poisson Model as well as for the logit  Inflation Zero model that explain the number and scarcity of number of schools. And most of them with α </= 0,05, which give us more accurate results We will interpret them at the end of the exercise
+
+
+> **THIRD MODEL: TRANSPORT POINTS OF SALE**
+
+We scale variables, create the model with all the important ones and see the multicollinearity:
+
+```{r}
+# We scale variables
+n_transport_salespoints <- df_transport$n_transport_salespoints
+census_section_code <- df_transport$census_section_code
+census_section_code <- as.character(df_transport$census_section_code)
+exp_vars <- df_transport |> dplyr::select(-n_transport_salespoints, -census_section_code)
+exp_vars_scaled <- as.data.frame(scale(exp_vars))
+
+# New dataframe
+df_transport <- cbind(n_transport_salespoints, census_section_code, exp_vars_scaled)
+```
+
+Test multicollinearity: 
+
+```{r}
+# Multicollinearity 
+zip_tr <- zeroinfl(n_transport_salespoints ~ spanish + italian + british + pcg_age_0_24 + american + area + span_it +  span_brit + span_24 + span_am + span_area + it_brit + it_24 + it_am + it_area + brit_24 + brit_am + age24_ame + age24_area + am_area, data = df_transport, dist="poisson")
+
+imcdiag(zip_tr)
+```
+
+We eliminate only variables with high VIF until the regression model works and has significant variables for both regressions
+
+We make the final model splitting the data to work on the train data:
+
+```{r}
+# FINAL MODEL: NUMBER OF TRANSPORT POINTS OF SALE
+training.samples <- df_transport$n_transport_salespoints |>
+  createDataPartition(p = 0.8, list = FALSE) 
+
+train.data3 <- df_transport[training.samples, ]
+test.data3 <- df_transport[-training.samples, ]
+
+zip_train_3 <- zeroinfl(n_transport_salespoints ~ spanish + italian + british + pcg_age_0_24+ american + area + span_it + span_brit + span_24 + span_am + it_24 + brit_am + am_area, data = train.data3, dist="poisson")
+
+summary(zip_train_3) # Which variables are significant
+
+```
+
+We have significant variables for the Poisson Model and also for the logit  Inflation Zero model that explain the number and scarcity of transport salepoints. We will interpret them at the end of the exercise
+
+But before interpreting it, we want to **compare the models with their predictions**. We want to know if the pharmacies, schools and numbers of transport sale points  that our models calculate match those in reality. And, based on that, see which census areas have less ease and more scarcity. That's what we are going to do in the "Score generation" part:
+
+# Score generation 
+
+So far we have already attended to several elements that allows us to accept our 3 models:
+
+- We understood the dependent variables and their distribution (taking care that there were no missing values), doing the **Exploratory Data Analysis**
+- We check the **significance and correlation and choose** those variables more relevant and significant for each target variable. Then, we expanded these variables, focusing on interactions
+- Although we assumed that the ZIP regression was going to be the best model to fit the data -due to the distribution, the discrete and count nature of the data, and the excess numbers of zeros-, we checked it comparing it to other models (linear and Poisson derivatives, such as standard, Negative Binomial Regression and Quasi Poisson Regression), taking into account the excess of 0s, overdispersion and the AIC metrics, and MAE for the predictions. We conclude **ZIP would be the best for each target variable at fitting the data and making predictions**(followed by the standard Poisson)
+- We finally **performed the 3 models**, but first we **scaled** the variables (so we could interpret the coefficients) and we took into account the **multicollinearity** eliminating some variables. We performed the model on the **train data**.
+
+So now, accepting our models, we are going to create a score to measure which areas have enough facilities and which ones don't. 
+
+## **Pharmacies**
+
+First, we obtain predictions. Here we can see the number of predicted pharmacies for each census_section_code:
+
+```{r}
+# Obtain predictions. 
+train.data1$predicted_pharmacies <- predict(zip_train_1, newdata = train.data1, type = "response")
+
+# Calculate the actual and predicted total by census tract
+section_summary1 <- train.data1 |>
+  group_by(census_section_code) |>
+  mutate(
+    total_real_pharmacies = sum(n_pharmacies),
+    total_predicted_pharmacies = sum(predicted_pharmacies),
+    total_predicted_pharmacies_rounded = round(sum(predicted_pharmacies))
+  ) |>
+  ungroup()
+
+print(section_summary1 |> dplyr:: select(total_real_pharmacies:total_predicted_pharmacies_rounded))
+```
+
+Now we create the score. We **compare the actual number of pharmacies with the number predicted** by the model. If there are fewer pharmacies than expected (actual < predicted), we mark the census tract with a 1 (scarcity). If not, 0.This helps us identify areas where pharmacies are lacking based on our model.
+
+```{r}
+section_summary1 <- section_summary1 |>
+  mutate(
+    scarcity_indicator = ifelse(total_real_pharmacies < total_predicted_pharmacies_rounded, 1, 0)
+  )
+
+table <- table(section_summary1$scarcity_indicator)
+prop.table(table)
+```
+In 35% there aren't enough facilities because we expected to be more
+
+To see which variables influence scaricity we have to look at the second regression in the ZIP model: the Zero Inflation. The Zero Inflation regression indicates which variables explain why there are many 0s (the scarcity)
+
+```{r}
+summary (zip_train_1) 
+```
+
+We have 0 variables with a confidence level of more than 95%, but for a lower confidence level (90%) we have the following: italian, city_population, population, income_per_capita, venezuelan, income_por. *(in the rendering might not appear significant)*
+
+Now we proceed to evaluate the model by comparing it with the predictions to see if they are reliable.
+
+**EVALUATE THE FIRST MODEL: PHARMACIES**
+
+We evaluate the model on the **test data** because this dataset was not used during the model training process, allowing us to assess how well the model generalizes to unseen data. We are going to look at other important metrics of the model to evaluate it: Root Mean Square Error (RMSE) or Mean Absolute Error (MAE) and then, very briefly, others like precision, specificity and sensitivity , considering 0 pharmacies as negative values
+
+```{r}
+# We calculate predictions
+predictions <- predict(zip_train_1, type = "response")
+
+# Calculate RMSE and MAE: REVISAR PARA EL RESTO DE MODELOS E INTERPRETAR ESTE
+rmse <- sqrt(mean((test.data1$n_pharmacies - predictions)^2))
+mae <- mean(abs(test.data1$n_pharmacies - predictions))
+list (rmse, mae)
+
+```
+
+The RMSE of 0.7 indicates that on average, the predictions of the number of pharmacies deviate by about 0.7 units from the actual values. The MAE of 0.6 shows that the average absolute error between the predictions and the actual values is about 0.6 pharmacies. This suggests that the model has a moderate error in predicting the exact number of pharmacies.
+
+Here we compare the actual values with the predicted ones in a table and we see the following:
+
+```{r}
+if (length(predictions) < length(df_pharmacies$n_pharmacies)) {
+  predictions_rounded <- c(round(predictions), rep(NA, length(df_pharmacies$n_pharmacies) - length(predictions)))
+}
+
+comparison_table <- table(true = df_pharmacies$n_pharmacies, pred = predictions_rounded)
+
+print(comparison_table)
+
+```
+
+On the diagonal there are high values, which is good because it means that the model knows how to predict the real values (for example, for 1275 cases where there is 1 pharmacy, the model predicts it well). However, outside the diagonal, we see high values too, which is bad because it means that it does not predict the value exactly well, for example in 1306 cases it predicts 1 when the value is actually 0. 
+
+If we consider that having 0 pharmacies is a negative case, and having 1 or more is positive, we can also calculate the following metrics: precision, recall, specificity, accuracy and F1 Score
+
+- Precision: (TP)/(TP+FP) = 1287/(1287+1296) = 0.5 
+
+50% of the time the model predicted a positive outcome, it was right
+
+- Recall: (TP)/(TP+FN) = 1287 / (1287+325)= 0.8 
+
+The model correctly identified 80% of real positive cases.
+
+- Specificity: (TN)/(TN+FP) = 301/(301+1296) = 0.19 
+
+However, the model correctly identified only 19% of the real negatives.
+
+- F1-Score: 2·(precision·recall)/(precision+recall) = 2·(0.5·0.8)/(0.5+0.) = 0.62 
+
+There is a moderate balance between precision and recall.
+
+- We don't calculate the accuracy because the dataset is class imbalanced.
+
+In general the model predicts quite well except for 0 / negative values.
+
+## **Schools**
+
+We do the same as for Pharmacies
+
+Compare predictions and observed values:
+
+```{r}
+# Obtain predictions. 
+train.data2$predicted_schools <- predict(zip_train_2, newdata = train.data2, type = "response")
+
+# Calculate the actual and predicted total by census tract
+section_summary2 <- train.data2 |>
+  group_by(census_section_code) |>
+  mutate(
+    total_real_schools = sum(n_schools),
+    total_predicted_schools = sum(predicted_schools),
+    total_predicted_schools_rounded = round(sum(predicted_schools))
+  ) |>
+  ungroup()
+
+print(section_summary2 |> dplyr:: select(total_real_schools:total_predicted_schools_rounded))
+```
+
+Now we create the score comparing the actual number of schools with the number predicted by the model as we did before with pharmacies
+
+```{r}
+section_summary2 <- section_summary2 |>
+  mutate(
+    scarcity_indicator = ifelse(total_real_schools < total_predicted_schools_rounded, 1, 0)
+  )
+
+table <- table(section_summary2$scarcity_indicator)
+prop.table(table)
+```
+In 29% there aren't enough facilities because we expected to be more
+
+The Zero Inflation regression indicated which variables explain why there are many 0s (tha scarcity)
+
+```{r}
+summary (zip_train_2) 
+```
+
+We have significant variables in the Zero Inflation model so we can see which variables explain the excess of zeros. We will focus more on those with significance levels >=0.05 (population, pop_24, popden_ame , popden_ratio). We will interpret them when exponenciated at the end of the exercise in the "Interpretation" part.
+
+Now, again, we compare the predictions with the real data to evaluate the model
+
+**EVALUATE THE SECOND MODEL: SCHOOLS**
+
+As before, we evaluate it with Root Mean Square Error (RMSE) and Mean Absolute Error (MAE) for the predictions on the **test data**
+
+```{r}
+# We calculate predictions
+predictions <- predict(zip_train_2, type = "response")
+
+# Calculate RMSE and MAE
+rmse <- sqrt(mean((test.data2$n_schools - predictions)^2))
+mae <- mean(abs(test.data2$n_schools - predictions))
+
+list (rmse, mae)
+
+```
+The RMSE of 1.5 and the MAE of 1 indicate that, on average, the predictions of the number of schools have an error of approximately 1.5 and 1, respectively. These relatively high errors could be a sign of overdispersion, where the variability of the actual data is greater than the model can capture as we saw in previous sections.
+
+Even so, we are going to see in a more visual way how the model predicts:
+
+```{r}
+if (length(predictions) < length(df_schools$n_schools)) {
+  predictions_rounded <- c(round(predictions), rep(NA, length(df_schools$n_schools) - length(predictions)))
+}
+
+comparison_table <- table(true = df_schools$n_schools, pred = predictions_rounded)
+print(comparison_table)
+
+```
+
+Again, we have high values on the diagonal (a good thing) but also outside it (imprecision in the model). At first glance we can think that the model is not going to be very good at predicting
+
+If we consider that having 0 schools is a negative case, and having 1 or more is positive, we can also calculate the following metrics:
+
+- Precision: (TP)/(TP+FP) = 419/(419+1206) = 0.26 
+
+26% of the time the model predicted a positive outcome, it was right
+
+- Recall: (TP)/(TP+FN) = 419 / (419+591)= 0.41 
+
+The model correctly identified 41% of real positive cases.
+
+- Specificity: (TN)/(TN+FP) = 707/(707+1206) = 0.37 
+
+The model correctly identified only 37% of the real negatives.
+
+- F1-Score: 2·(precision·recall)/(precision+recall) = 2·(0.26·0.41)/(0.26+0.41) = 0.32 
+
+This suggests that the model has moderately poor performance, since neither precision nor recall are high.
+
+In general the the performance of the predicting model is low
+
+## **Transport points of sale**
+
+Comparing observed with predicted values: 
+
+```{r}
+# Obtain predictions. 
+train.data3$predicted_transport <- predict(zip_train_3, newdata = train.data3, type = "response")
+
+# Calculate the actual and predicted total by census tract
+section_summary3 <- train.data3 |>
+  group_by(census_section_code) |>
+  mutate(
+    total_real_transport = sum(n_transport_salespoints),
+    total_predicted_transport = sum(predicted_transport),
+    total_predicted_transport_rounded = round(sum(predicted_transport))
+  ) |>
+  ungroup()
+
+print(section_summary3 |> dplyr:: select(total_real_transport:total_predicted_transport_rounded))
+```
+
+Now we create the score comparing the actual number of transport points of sale with the number predicted by the model as we did before
+
+```{r}
+section_summary3 <- section_summary3 |>
+  mutate(
+    scarcity_indicator = ifelse(total_real_transport < total_predicted_transport_rounded, 1, 0)
+  )
+
+table <- table(section_summary3$scarcity_indicator)
+prop.table(table)
+```
+In 3% there aren't enough facilities because we expected to be more
+
+The Zero Inflation regression indicated which variables explain why there are many 0s (the scarcity)
+
+```{r}
+summary (zip_train_3) 
+```
+
+Although the significance is somewhat lower (0.5), we see that the most variables are significant variables to explain the scarcity of points of sale in the Zero Inflated model (excess of 0s) *(in the rendering might not appear significant)*
+
+
+**EVALUATE THE THIRD MODEL: TRANSPORT POINTS OF SALE**
+
+```{r}
+# We calculate predictions
+predictions <- predict(zip_train_3, type = "response")
+
+# Calculate RMSE and MAE
+rmse <- sqrt(mean((test.data3$n_transport_salespoints - predictions)^2))
+mae <- mean(abs(test.data3$n_transport_salespoints - predictions))
+
+list (rmse, mae)
+
+```
+The RMSE of 0.5 indicates that on average, the predictions of the number of transport points of sale deviate by about 0.5 units from the actual values. The MAE of 0.4 shows that the average absolute error between the predictions and the actual values is about 0.4 points of sale. This suggests that the model has a moderate error in predicting the exact number of points of sale -it's less than half a point of sale-
+
+Now we more visually compare the actual values with the predictions
+```{r}
+if (length(predictions) < length(df_transport$n_transport_salespoints)) {
+  predictions_rounded <- c(round(predictions), rep(NA, length(df_transport$n_transport_salespoints) - length(predictions)))
+}
+
+comparison_table <- table(true = df_transport$n_transport_salespoints, pred = predictions_rounded)
+print(comparison_table)
+
+```
+
+In this case we have more values in the diagonal (especially in the number 0 ) than out of it, meaning that it predicts better than the other two models. From what it seems, the model can predict very well when there will be 0 points of sale, although it also predicts 0 when there are some points of sale (it would be a false negative)
+
+Consider that having 0 transport sale points is a negative case, and having 1 or more is positive, we can calculate:
+
+- Precision: (TP)/(TP+FP) = 31/(31+137) = 0.18 
+
+18% of the time the model predicted a positive outcome, it was right
+
+- Recall: (TP)/(TP+FN) = 31/(31+824)= 0.04 
+
+The model correctly identified 4% of real positive cases.
+
+- Specificity: (TN)/(TN+FP) = 2534/(2534+137) = 0.95 
+
+The model correctly identified only 95% of the real negatives.
+
+- F1-Score: 2·(precision·recall)/(precision+recall) = 2·(0.18·0.04)/(0.18+0.04) = 0.07 
+
+This suggests that the model has very poor performance, since neither precision nor recall are high. However, it's a good model predicting 0s (attending to specificity). 
+
+Once we have the models and we' have 've seen how they predict -some with better performance than others, but we can accept all-, we can proceed to interpret and discuss our results:
+
+# Results analysis and discussion
+
+**CLARIFICATION**: *In the rendering might be some slightly changes in the significances and coefficients. It shouldn't affect the interpretation, but I warned because sometimes it removes significance from variables that already had little significance (0.1).*
+
+  
+We are going to interpret the result from de ZIP models already created on the train data. These train data results can be interpreted because they reflect the relationships identified in the model.
+
+
+## **Pharmacies**
+
+We first attend to the significant variables in both the Poisson regression and in the Zero Inflated, although we will draw general conclusions from the results of both regressions:
+
+We take the significant variables first:
+
+```{r}
+summary (zip_train_1)
+```
+
+We transforms the coefficients exponentially and rounds them to 2 decimal places to interpret them as risk rates or probabilities instead of logarithmic values. This makes it much easier to interpret and understand the results. 
+
+```{r}
+round(exp(coef(zip_train_1)),2) 
+```
+
+> **Interpretation and discussion**
+
+Paying attention specially first to the **Poisson regression** we have this model:
+
+log(λ)
+Number of pharmacies = 0.64 + (1.06 · italian) + (1.15 · city population) + (1.34 · population)  + (1.18 · income_per_capita) + (0.85 · incom_pop) + Error
+
+With a confidence level of round 95-99% and controlling the rest of the variables, we can affirm the following:
+
+The intercept of the model represents the reference rate (the base number of pharmacies without the effects of the explanatory variables) and in this case the base number of pharmacies is 0.64. First, ceteris paribus, we analize the variables that influence the growth of the number of pharmacies: In areas where the "Italian" variable increases by 1 unit (it's measured in %), it's associated with a 6% increase in the pharmacy rate (0,06 log-odds). This may be due to some cultural factors, such as different health-related practices or preferences among Italians, which could lead to incentivizing the creation of new pharmacies. However, this hypothesis doesn't have great theoretical validation. That's why we must consider that it may be a **case of endogeneity**, that is, that the number of pharmacies doesn't depend on there being more italians, but on the contrary, the number of italians is due to the number of pharmacies. In other words, perhaps many italians are going to live in areas with more pharmacies or even health centers since they are in a foreign country and prefer to have basic resources close to them. However, this is only a hypothesis for which further quanti and qualitative studies would be needed.
+
+We also see in those census sections where the city population increases by 1 unit, the number of pharmacies increase 15% (0.13 log-odds) and where the population in general increases 1 unit, the number of pharmacies is 34% bigger (0.28 log-odd). This may be due precisely because the more population there is, the greater the demand for pharmaceutical products and there must be more pharmacies that satisfy this demand. Logically, in areas with less population there will not be pharmacies; hence there are excess 0s in many census sections (especially in those where there is less population). 
+
+Where the income per capita increases in 1 unit, the number of pharmacies increases 28% (0,16 log odds), which can be explained because wealthier areas have more resources to invest in healthcare infrastructure, while poorer areas may struggle to attract such investments, resulting in fewer pharmacies. To this we can add institutional discrimination against poorer areas: when the budget is divided and there is scarcity, richer or central areas are usually prioritized instead of peripheral neighborhoods.
+
+On the other side, ceteris paribus, when we increase in 1 unit the interaction of income per capita and population, number of pharmacies decreases in 15% (-0,16 log odds). This negative interaction between income per capita and population suggests that in areas with both high income and population, the number of pharmacies actually decreases. This could be due to market saturation, increased competition, or a shift to alternative pharmacy models (like online or in-store pharmacies).
+
+Now taking into account the **Zero Inflated regression** of the ZIP model and with a a lower level of confidence (90%) there are the same significant variables than for the logit regression. So as before, ceteris paribus, there are 0 pharmacies where there's less population and where there's less income per capita. However, if both factors interacts with each other the results vary since the relationship with the dependent variable is negative. 
+
+In general, the model shows that the number of pharmacies tends to increase in areas with more population, a higher proportion of Italians and higher per capita income. However, in areas with high income and high population, the number of pharmacies decreases, possibly due to saturation or competition.
+
+## **Schools**
+
+Again, we first attend to the significant variables in both the Poisson and in the Zero Inflated model:
+
+```{r}
+summary (zip_train_2) 
+```
+
+We exponentiate the coefficients:
+
+```{r}
+round(exp(coef(zip_train_2)),2) 
+```
+
+> **Interpretation and discussion**
+
+First, in the **Poisson model** we can highlight with a confidence level between 95% and 99% and controlling the rest of the variable:
+
+log(λ)
+Number of schools = 0.8 + (0.4 · population_density) + (1.15 · average_age) + (1.11 · american) + (0.81 · popden_amer) + Error
+
+
+The base number of schools without the effects of the explanatory variables is 0.8. Ceteris paribus, focusing on the variables that positively influence, in census section where there's a higher average age, the number of schools increases 15% (0.13 log odds). The increase in the number of schools in census sections with a higher average age could be due to the anticipation of future population growth, in which the adult population, which currently doesn't have young children, will eventually begin to have them. And that is why long-term policies are designed, building schools for the future. This would generate greater demand for schools to meet the educational needs of the new generation. Furthermore, in these demographic contexts, it's common the urge of more inclusive educational policies aimed at adults who wish to return to formal education or continue their formation. These policies contribute to the creation of new educational institutions that cover both young people and adults.
+
+Also where the population of americans increases in 1%, the number of schools increases 11% (0.1 log-odds). As in the case of pharmacies and Italians, the relationship between americans and schools might be due to more cultural factors or, on the other side, it may be a case of endogeneity, that is, perhaps it's not that there are more schools in areas with Americans, but the other way around: Americans are going to live in areas with more schools to have options to choose from (due to educational limitations in the US and the need for another educational orientation). Therefore, it would be necessary to do more statistical tests on this relationship.
+
+On the other hand, attending to these variables that affect negatively to the target variable, we can affirm that the increase of 1 unit in the population density, there are 60% less schools (-0.88 log-odds). This result may be due to the fact that in areas with higher population density, the availability of space and resources to build new schools is limited, which restricts educational expansion. This leads to greater competition for land and resources in these areas and can cause other services to be prioritized over education. For example, in areas where there are many people living or a lot of tourists, such as in the center of Madrid, it is prioritized to have terraces, bars, attractions for fun, etc. but not schools.
+
+And when there's an increase of the interaction between population density and american, the numbers of schools decreases round 20% (-0.21 log-odds). Related to the previous example, this interaction can be an example of tourist areas where more other investments such as tourist attractions, more tourist apartments, bars, restaurants...are prioritized and schools would not be necessary.
+
+In the **Zero Inflated regression** we also have with a good confidence level (95-99%) great number of significant variables of which there are some that already appeared in the Poisson regression and we've already interpret. Also, it's also seen that the increase in the interaction of the population and the population between 0 and 24 years old also causes the number of schools to increase. Precisely this may be due to the fact that if the population increases and we also begin to see that there are more young age groups, policies will be focus on building schools. This result could be seen in contradiction with the significance of the "average age" variable where we already saw that schools increase if the average age increases. This can perhaps be explained by short- and long-term policy implementation: on the one hand, the authorities (like mayors) respond to a more immediate demographic growth of young people building schools, while the increase in the average age responds to long-term planning, where a growth in the child population is expected in the future. However, the relationships of these variables and their importance should be delved into.
+Finally, the interaction between pop density and home expense ratio is also significant, suggesting that these areas tend to have greater investment in educational infrastructure to meet the demand of a denser population with greater economic capacity. Additionally, higher household expenditures could indicate a greater demand and priority for education in those areas.
+
+To sum up, the number of schools increases in areas with a higher average age, anticipating future population growth. An increase is also seen in areas with more young populations, reflecting a short-term focus on school construction. However, high population density and interaction with areas with an American population reduce the number of schools due to competition for resources and the prioritization of other services.
+
+
+## **Transport points of sale**
+
+Again, we first attend to the significant variables in both the Poisson model and in the Zero Inflated model. 
+
+```{r}
+summary (zip_train_3)
+```
+
+```{r}
+round(exp(coef(zip_train_3)),2) 
+```
+
+> **Interpretation and discussion**
+
+Taking into account the first Poisson model and with a confidence level of round 95-99% and controlling the rest of the variables, we can affirm the following:
+
+log(λ)
+Number of transport points of sale = 0.26 + (1.45·spanish) + (2.57 · pcg_age_0_24) + (1.16· area) (0.26 · span_24) + Error
+
+Clarification: I understand transportation sales points such as the sale of vouchers, tickets, etc. , not as points of sale of cars, buses, trucks, etc.
+
+The base number of transport point of sale without the effects of the independent variables is 0.26, that's nearly 0. We analize the variables that influence the growth of the number of salepoints. Ceteris paribus, an increase of 1 unit in the percentage of Spaniards increases the probability of there being transport sales points by 45% (0.37 log-odds). This may be because when it comes to locating these points of sale, it is preferred to benefit the local population since they are generally the ones who live there all their lives and require more transportation. It could also be that, after doing a market study, mayors and authorities saw that Spaniards use transportation more than other people and it benefits them more to have this service. That's why they establish more points of sale there. It may also be due to institutional discrimination, prioritizing areas with more Spanish people than others due to an aversion to foreigners and not wanting to cover their needs.
+
+In areas where the group of people between 0 and 24 years old increases, the number of transport point of sale increases 157% (0.94 log-odds). This may be due to the fact that, being a very young age group, they cannot travel by car on their own because they do not have a driver's license, and therefore this public service is needed so that they can move more easily. Additionally, relating it to the previous model, many young people who have to go to school and whose parents cannot take them because they work need more accessible transportation.
+
+Furthermore, increasing the area of the census section by 1 unit increases the probability of having these points of sale by 16% (0.14 log-odds). Thus, logically, in larger areas there should be more points of sale because these areas usually cover more population  and require a better distribution of services to facilitate access to public transportation modes. Furthermore, the longer distances within these areas make a greater number of strategic points necessary to satisfy the demand of transport users.
+
+Now, attending to those variables than influence negatively to the target variable, we see that the increase in 1 unit in the interaction between spanish population and the age group 0-24 decreases the number of points of sale by 74% (-1.3 log-odds). This interaction seems to contradict the previous statements, but what it really tells us is that the Spanish young population does not seem to have preferences towards transportation and its points of sale. To clarify this, it would be necessary to compare whether this changes for Spanish adults or for young people of other nationalities.
+
+Now, taking into consideration the **logit Zero Inflated regression**, there we see that most of the variables are significant with a confidence of only 90%. Apart from what has already been mentioned, we can add the following controlling the rest of the variables: in areas with Italians and British there are more points of sale but where there are Americans there are fewer (excess of 0). There may be different mobility patterns here. Perhaps in large areas with an American population, less investment is made in transportation points of sale precisely because of the perception in American culture that they prefer private vehicles. The rest of the variables are interactions of those already mentioned and behave in the same way.
+
+In general, the number of transport sales points increases in areas with a larger Spanish population and larger areas, perhaps due to greater demand for transport. However, the interaction between the Spanish population and young people reduces the number of points of sale, possibly due to differences in transportation preferences. There are also differences between nationalities: areas with more British and Italians have more transport points of sale and Americans less.
+
+## Summary of contributions and limitations
+
+After this entire exercise we have been able to **analyze which variables explain (and predict) why there are more or fewer public services in census areas of a population**. We have approached to obtain the model that best adapts to the distribution of the target variables, trying to avoid problems of multicollinearity, overdispersion, large errors in MAE and RMSE and so on to obtain the best model that predicts the relevant variables. None of the models are perfect, and could be trained even more to be more accurate, but the models presented have adapted quite well and have given us results that are quite close to reality. This is how we have been able to understand which factors should be focused on if we want more pharmacies, schools or transportation sales points.
+
+Additionally, this gives us an image of **certain inequalities that exist** and improvements that could be carried out to have services distributed in a better way. For example, we've seen that in areas with lower income per capita less is invested in pharmacies, or in areas where the average age is higher there are more schools when maybe sections with young people should be prioritized. In the same way, it's seen that transportation sales points are placed less in certain neighborhoods where there are more people of other nationalities, which may be due to prejudices where we assume that Americans will use public transportation less. All this gives us **clues on how to improve the services of the census sections**.
+
+Due to time and exercise limitations, we were **unable to perform additional tests, such as endogeneity**, that would have addressed potential reverse causality issues. Throughout the analysis, we had questions about whether the explanatory variables really influence the target variables or whether an inverse relationship could occur. For example, it could be that the presence of more pharmacies does not cause the concentration of Italians, but, in fact, it's the presence of more pharmacies that attracts the Italians, which is a clear case of endogeneity. This phenomenon implies that the explanatory variables and the dependent variable are correlated due to a bidirectional causal relationship or an unobserved factor that affects both, which could bias the results and conclusions.
+
+Another limitation of the model could be the lack of other significant variables more specific not included in the database, e.g. a major factor influencing the number of pharmacies could be the number of health centers: the more there are of these, the more pharmacies there are, even in small towns. Also, despite talking about different nationalities that live in neighborhoods, there is no variable for tourists. And much of the distribution of basic services depends on whether it is a tourist area or not. Another important variable could have been the ruling party: the party governing the district and its policies might influence the number of schools.
+
+As a result of having worked with this data, we propose another way to study the number of services in the census areas so that we can predict the number of schools, pharmacies and transportation sales points: a longitudinal study. We would investigate how these services change over time and what factors continuously affect them, such as public policies or party ideology influencing public services. At the same time, it could also examine how social factors such as urban development or demographic structure impact the creation of new pharmacies, schools or transportation points of sale. However, these types of studies are already more complicated due to non-independent observations, so we would need Linear Mixed Models (LMMs)
+
+Finally, I would like to mention some of my limitations doing this exercise. First, I would also have likes to apply regularization models for the selection of variables -like Lasso-, but since it was a ZIP model I had many difficulties in carrying it out and fully understanding it.
+Second, I had a lot of problems rendering due to problems with my own computer. I couldn't render, and when I finally did (after nearly 2 days), it didn't allow me to render the first 2 chuncks.
+
+
+
